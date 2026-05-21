@@ -93,3 +93,4 @@ artifacts/
 *.dll
 *.exe
 *.pdb
+/resumes

@@ -70,44 +70,63 @@ foreach (var file in pdfFiles)
 
     // 3. Save to Neo4j as a graph
     Console.Write(" Saving...");
+
+    var education = j["education"]!
+        .Select(e => new {
+            institution = e["institution"]?.Value<string>() ?? "",
+            degree      = e["degree"]?.Value<string>() ?? "",
+            year        = e["year"]?.Value<int>() ?? 0
+        }).ToList();
+
+    var work = j["workExperience"]!
+        .Select(w => new {
+            company  = w["company"]?.Value<string>() ?? "",
+            role     = w["role"]?.Value<string>() ?? "",
+            duration = w["duration"]?.Value<string>() ?? ""
+        }).ToList();
+
     await using var session = neo4j.AsyncSession();
+    await session.ExecuteWriteAsync(async tx =>
+    {
+        // Upsert student node
+        await tx.RunAsync(@"
+            MERGE (s:Student {email: $email})
+            SET s.name              = $name,
+                s.phone             = $phone,
+                s.location          = $location,
+                s.linkedIn          = $linkedIn,
+                s.gitHub            = $gitHub,
+                s.yearsOfExperience = $years,
+                s.summary           = $summary,
+                s.sourceFile        = $sourceFile",
+            new { email, name, phone, location, linkedIn, gitHub, years, summary, sourceFile = filename });
 
-    await session.RunAsync(@"
-        MERGE (s:Student {email: $email})
-        SET s.name = $name, s.phone = $phone, s.location = $location,
-            s.linkedIn = $linkedIn, s.gitHub = $gitHub,
-            s.yearsOfExperience = $years, s.summary = $summary,
-            s.sourceFile = $sourceFile",
-        new { email, name, phone, location, linkedIn, gitHub, years, summary, sourceFile = filename });
-
-    foreach (var skill in skills)
-        await session.RunAsync(@"
+        // Link all skills in one query — UNWIND iterates the list inside the database
+        await tx.RunAsync(@"
             MATCH (s:Student {email: $email})
-            MERGE (sk:Skill {name: $skill})
+            UNWIND $skills AS skill
+            MERGE (sk:Skill {name: skill})
             MERGE (s)-[:HAS_SKILL]->(sk)",
-            new { email, skill });
+            new { email, skills });
 
-    foreach (var edu in j["education"])
-        await session.RunAsync(@"
+        // Link all education entries in one query
+        await tx.RunAsync(@"
             MATCH (s:Student {email: $email})
-            MERGE (i:Institution {name: $inst})
+            UNWIND $education AS edu
+            MERGE (i:Institution {name: edu.institution})
             MERGE (s)-[r:STUDIED_AT]->(i)
-            SET r.degree = $degree, r.year = $year",
-            new { email,
-                inst = edu["institution"]?.Value<string>(),
-                degree = edu["degree"]?.Value<string>(),
-                year = edu["year"]?.Value<int>() });
+            SET r.degree = edu.degree, r.year = edu.year",
+            new { email, education });
 
-    foreach (var w in j["workExperience"])
-        await session.RunAsync(@"
+        // Link all work experience entries in one query
+        await tx.RunAsync(@"
             MATCH (s:Student {email: $email})
-            MERGE (c:Company {name: $company})
+            UNWIND $work AS w
+            MERGE (c:Company {name: w.company})
             MERGE (s)-[r:WORKED_AT]->(c)
-            SET r.role = $role, r.duration = $duration",
-            new { email,
-                  company  = w["company"]?.Value<string>(),
-                  role     = w["role"]?.Value<string>(),
-                  duration = w["duration"]?.Value<string>()});
+            SET r.role = w.role, r.duration = w.duration",
+            new { email, work });
+    });
 
     Console.WriteLine($" Done!");
     Console.WriteLine($"    Name   : {name}");
